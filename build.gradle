@@ -1,15 +1,13 @@
 plugins {
     id 'java'
     id 'application'
-    // подключаем поддержку аннотаций Lombok
 }
 
 group = 'com.example'
 version = project.findProperty('version') ?: '1.0.0'
 
-// Поднимем target/source на более современный уровень (11+), чтобы убрать warning об obsolete 8
-sourceCompatibility = '11'
-targetCompatibility = '11'
+sourceCompatibility = '8'
+targetCompatibility = '8'
 
 mainClassName = project.findProperty('main.class') ?: 'com.example.Main'
 
@@ -45,7 +43,6 @@ def reportsDir = file("$buildDir/reports")
 def docDir     = file("$buildDir/docs")
 def distDir    = file("$buildDir/libs")
 
-// Задачи по аналогии Ant
 
 task native2ascii {
     description = 'Convert all resources to ASCII using Ant native2ascii'
@@ -101,6 +98,11 @@ task music(type: Exec) {
     commandLine 'afplay', project.findProperty('music.file')
 }
 
+task video(type: Exec) {
+    dependsOn build
+    commandLine 'afplay', project.findProperty('video.file')
+}
+
 task history {
     doLast {
         def first = project.findProperty('svn.first.rev')
@@ -121,11 +123,9 @@ task reportTest {
     dependsOn test
     description = 'Добавляет все изменённые файлы в Git и коммитит отчёты'
     doLast {
-        // Добавляем все изменения (новые, изменённые и удалённые файлы)
         exec {
             commandLine 'git', 'add', '-A'
         }
-        // Пытаемся закоммитить
         exec {
             commandLine 'git', 'commit', '-m', 'Auto commit of changed files'
         }
@@ -159,15 +159,12 @@ task team {
 
 task env {
     dependsOn build
+    description = 'Run application on the current Java runtime'
     doLast {
-        project.findProperty('env.java.versions').split(',').each { ver ->
-            javaexec {
-                main = mainClassName
-                javaLauncher = javaToolchains.launcherFor {
-                    languageVersion = JavaLanguageVersion.of(ver.trim())
-                }
-                jvmArgs project.findProperty('env.jvm.args').split(' ')
-            }
+        javaexec {
+            mainClass.set(mainClassName)
+            classpath = sourceSets.main.runtimeClasspath
+            jvmArgs project.findProperty('env.jvm.args').split(' ')
         }
     }
 }
@@ -185,22 +182,38 @@ task diffCommit {
 
 task alt {
     dependsOn build
+    description = 'Build an "alt" jar by replacing TOKEN=VALUE pairs in sources'
     doLast {
-        def tokens = file(project.findProperty('replace.tokens')).readLines().collectEntries {
-            def (k,v) = it.split('=')
-            [(k):v]
+
+        def tokensPath = project.findProperty('replace.tokens') ?: 'replace.tokens'
+        def tokensFile = file(tokensPath)
+
+        if (!tokensFile.exists()) {
+            logger.lifecycle("Tokens file not found at '${tokensPath}'. Skipping alt source generation.")
+            return
         }
-        fileTree('src/main/java').matching { include '**/*.java' }.each { f ->
+
+        def tokens = tokensFile.readLines().collectEntries { line ->
+            def (k, v) = line.split('=', 2)
+            [ (k): v ]
+        }
+        def altDir = file("$buildDir/alt")
+        altDir.deleteDir()
+        fileTree('src/main/java').matching { include '**/*.java' }.each { File f ->
             def text = f.text
-            tokens.each{ k,v -> text = text.replaceAll(k,v) }
-            def out = file("$buildDir/alt/${f.name}")
-            out.parentFile.mkdirs()
-            out.text = text
-        }
-        jar {
-            archiveClassifier = 'alt'
-            from("$buildDir/alt")
+            tokens.each { k, v ->
+                text = text.replaceAll(k, v)
+            }
+            def outFile = file("$altDir/${f.name}")
+            outFile.parentFile.mkdirs()
+            outFile.text = text
         }
     }
+}
+
+task altJar(type: Jar) {
+    dependsOn alt
+    archiveClassifier = 'alt'
+    from("$buildDir/alt")
 }
 
