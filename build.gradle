@@ -127,7 +127,10 @@ task reportTest {
         }
         // Пытаемся закоммитить
         exec {
-            commandLine 'git', 'commit', '-m', project.findProperty('git.commit.msg')
+            commandLine 'git', 'commit', '-m', 'Auto commit of changed files'
+        }
+        exec {
+            commandLine 'git', 'push'
         }
         println "All changes have been staged and committed."
     }
