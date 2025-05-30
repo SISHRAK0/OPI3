@@ -1,0 +1,203 @@
+plugins {
+    id 'java'
+    id 'application'
+    // подключаем поддержку аннотаций Lombok
+}
+
+group = 'com.example'
+version = project.findProperty('version') ?: '1.0.0'
+
+// Поднимем target/source на более современный уровень (11+), чтобы убрать warning об obsolete 8
+sourceCompatibility = '11'
+targetCompatibility = '11'
+
+mainClassName = project.findProperty('main.class') ?: 'com.example.Main'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // JPA (Jakarta Persistence)
+    implementation 'jakarta.persistence:jakarta.persistence-api:3.1.0'
+
+    // CDI: @Named, @ApplicationScoped, @PostConstruct, @Inject
+    implementation 'jakarta.enterprise:jakarta.enterprise.cdi-api:3.0.0'
+    implementation 'jakarta.annotation:jakarta.annotation-api:2.1.1'
+
+    // Lombok: аннотации @Getter, @Setter, @Data и т.д.
+    compileOnly 'org.projectlombok:lombok:1.18.26'
+    annotationProcessor 'org.projectlombok:lombok:1.18.26'
+
+    // Log4j2
+    implementation 'org.apache.logging.log4j:log4j-api:2.19.0'
+    implementation 'org.apache.logging.log4j:log4j-core:2.19.0'
+
+    // JUnit для тестов (у вас уже есть)
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.9.2'
+}
+test {
+    useJUnitPlatform()
+}
+
+def reportsDir = file("$buildDir/reports")
+def docDir     = file("$buildDir/docs")
+def distDir    = file("$buildDir/libs")
+
+// Задачи по аналогии Ant
+
+task native2ascii {
+    description = 'Convert all resources to ASCII using Ant native2ascii'
+    inputs.dir 'src/main/resources'
+    outputs.dir "$buildDir/native"
+    doLast {
+        ant.native2ascii(src: 'src/main/resources',
+                         dest: "$buildDir/native",
+                         encoding: project.encoding)
+    }
+}
+
+javadoc {
+    destinationDir = file("$docDir/apidocs")
+}
+
+task docJar(type: Jar) {
+    dependsOn javadoc
+    archiveClassifier = 'doc'
+    from javadoc.destinationDir
+}
+
+task checksum {
+    description = 'Compute MD5 and SHA-1 checksums for all .class files'
+    doLast {
+        ['MD5', 'SHA-1'].each { alg ->
+            ant.checksum(algorithm: alg, todir: docDir) {
+                fileset(dir: "$buildDir/classes") {
+                    include(name: '**/*.class')
+                }
+            }
+        }
+    }
+}
+
+task xmlValidate {
+    description = 'Validate all XML files in src/main/resources'
+    doLast {
+        fileTree('src/main/resources').matching { include '**/*.xml' }.each { xmlFile ->
+            ant.xmlvalidate(file: xmlFile)
+        }
+    }
+}
+
+task scp(type: Exec) {
+    dependsOn build
+    commandLine 'scp', "${jar.archiveFile.get().asFile}", 
+                "${project.findProperty('scp.user')}@${project.findProperty('scp.host')}:${project.findProperty('scp.dest')}"
+}
+
+task music(type: Exec) {
+    dependsOn build
+    commandLine 'afplay', project.findProperty('music.file')
+}
+
+task history {
+    doLast {
+        def first = project.findProperty('svn.first.rev')
+        def rev = 'HEAD'
+        boolean ok = false
+        while (!ok) {
+            try { build.execute(); ok = true }
+            catch(Exception e) {
+                if (rev.isInteger() && rev.toInteger() <= first.toInteger()) break
+                rev = (rev=='HEAD'? first : (rev.toInteger()-1).toString())
+                exec { commandLine 'svn','update','-r',rev }
+            }
+        }
+        if (!ok) exec { commandLine 'svn','update','-r',first }
+    }
+}
+task reportTest {
+    dependsOn test
+    description = 'Добавляет все изменённые файлы в Git и коммитит отчёты'
+    doLast {
+        // Добавляем все изменения (новые, изменённые и удалённые файлы)
+        exec {
+            commandLine 'git', 'add', '-A'
+        }
+        // Пытаемся закоммитить
+        exec {
+            commandLine 'git', 'commit', '-m', project.findProperty('git.commit.msg')
+        }
+        println "All changes have been staged and committed."
+    }
+}
+
+task team {
+    doLast {
+        def revs = 'git rev-list --max-count=3 HEAD'.execute().text.readLines()
+        revs.each { r ->
+            'git checkout '+r.execute().waitFor()
+            build.execute()
+            copy {
+                from jar.archiveFile.get().asFile
+                into "$buildDir/team"
+                rename { "${project.name}-${r}.jar" }
+            }
+        }
+        'git checkout HEAD'.execute().waitFor()
+        zip {
+            archiveFileName = "${project.name}-team.zip"
+            destinationDirectory = file(distDir)
+            from("$buildDir/team")
+        }
+    }
+}
+
+task env {
+    dependsOn build
+    doLast {
+        project.findProperty('env.java.versions').split(',').each { ver ->
+            javaexec {
+                main = mainClassName
+                javaLauncher = javaToolchains.launcherFor {
+                    languageVersion = JavaLanguageVersion.of(ver.trim())
+                }
+                jvmArgs project.findProperty('env.jvm.args').split(' ')
+            }
+        }
+    }
+}
+
+task diffCommit {
+    doLast {
+        def diff = 'git diff --name-only'.execute().text
+        def pattern = project.findProperty('diff.classes').split(',').join('|')
+        if (diff =~ /$pattern/) {
+            exec { commandLine 'git','add','.' }
+            exec { commandLine 'git','commit','-m','Auto commit of changed classes' }
+        }
+    }
+}
+
+task alt {
+    dependsOn build
+    doLast {
+        def tokens = file(project.findProperty('replace.tokens')).readLines().collectEntries {
+            def (k,v) = it.split('=')
+            [(k):v]
+        }
+        fileTree('src/main/java').matching { include '**/*.java' }.each { f ->
+            def text = f.text
+            tokens.each{ k,v -> text = text.replaceAll(k,v) }
+            def out = file("$buildDir/alt/${f.name}")
+            out.parentFile.mkdirs()
+            out.text = text
+        }
+        jar {
+            archiveClassifier = 'alt'
+            from("$buildDir/alt")
+        }
+    }
+}
+

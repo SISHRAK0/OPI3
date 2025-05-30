@@ -1,15 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project name="weblab3" default="build" basedir=".">
-
+    <!-- Загружаем параметры -->
     <property file="build.properties"/>
 
-    <!-- Очистка -->
-    <target name="clean">
-        <delete dir="${build.dir}"/>
-        <delete dir="${test.build.dir}"/>
-        <delete dir="${dist.dir}"/>
-        <delete dir="${report.dir}"/>
-    </target>
+    
 
     <!-- Инициализация директорий -->
     <target name="init">
@@ -17,83 +11,187 @@
         <mkdir dir="${test.build.dir}"/>
         <mkdir dir="${dist.dir}"/>
         <mkdir dir="${report.dir}"/>
+        <mkdir dir="${doc.dir}"/>
     </target>
 
-    <!-- Компиляция -->
+    <!-- Полная очистка -->
+    <target name="clean">
+        <delete dir="${build.dir}"/>
+        <delete dir="${test.build.dir}"/>
+        <delete dir="${dist.dir}"/>
+        <delete dir="${report.dir}"/>
+        <delete dir="${doc.dir}"/>
+    </target>
+
+    <!-- Компиляция основного кода -->
     <target name="compile" depends="init">
-        <javac srcdir="${src.main}" destdir="${build.dir}" encoding="${encoding}" includeantruntime="false">
+        <javac srcdir="${src.main}" destdir="${build.dir}"
+               encoding="${encoding}" includeantruntime="false">
             <classpath>
-                <fileset dir="dependency">
-                    <include name="**/*.jar"/>
-                </fileset>
+                <fileset dir="${lib.dir}" includes="**/*.jar"/>
             </classpath>
         </javac>
-        <!-- Копируем ресурсы, исключая MANIFEST.MF -->
         <copy todir="${build.dir}">
-            <fileset dir="${src.resources}" excludes="MANIFEST.MF" erroronmissingdir="true"/>
+            <fileset dir="${src.resources}" excludes="**/MANIFEST.MF"/>
         </copy>
     </target>
 
+    <!-- Упаковка в jar с манифестом -->
+    <target name="build" depends="compile">
+        <jar destfile="${dist.dir}/${jar.name}" basedir="${build.dir}">
+            <manifest>
+                <attribute name="Implementation-Version" value="${version}"/>
+                <attribute name="Main-Class"            value="${main.class}"/>
+            </manifest>
+        </jar>
+        <echo message="✔ Jar создан: ${dist.dir}/${jar.name}"/>
+    </target>
+
     <!-- Компиляция тестовых классов -->
-    <target name="compile-test" depends="compile">
-        <javac srcdir="${src.test}" destdir="${test.build.dir}" encoding="${encoding}" includeantruntime="false">
+    <target name="compile-test" depends="build">
+        <javac srcdir="${src.test}" destdir="${test.build.dir}"
+               encoding="${encoding}" includeantruntime="false">
             <classpath>
                 <pathelement path="${build.dir}"/>
-                <fileset dir="dependency">
-                    <include name="**/*.jar"/>
-                </fileset>
+                <fileset dir="${lib.dir}" includes="**/*.jar"/>
             </classpath>
         </javac>
     </target>
 
-    <!-- Упаковка в jar с MANIFEST.MF -->
-    <target name="build" depends="compile">
-        <jar destfile="${dist.dir}/${jar.name}" basedir="${build.dir}" manifest="${src.resources}/MANIFEST.MF"/>
-        <echo>[INFO] Jar файл: ${dist.dir}/${jar.name}. Manifest: ${src.resources}/MANIFEST.MF</echo>
-    </target>
-
-    <!-- Тесты. Запускает compile-test и build -->
-    <target name="test" depends="build,compile-test">
+    <!-- Запуск JUnit -->
+    <target name="test" depends="compile-test">
         <mkdir dir="${report.dir}"/>
-            <java classname="org.junit.platform.console.ConsoleLauncher" fork="true" failonerror="false">
-                <classpath>
-                    <pathelement path="${build.dir}"/>
-                    <pathelement path="${test.build.dir}"/>
-                    <fileset dir="dependency">
-                        <include name="**/*.jar"/>
-                    </fileset>
-                </classpath>
-                <arg value="--scan-classpath"/>
-                <arg value="${test.build.dir}"/>
-                <arg value="--reports-dir"/>
-                <arg value="${report.dir}"/>
-                <arg value="--details"/>
-                <arg value="tree"/>
-            </java>
+        <junit printsummary="on" haltonfailure="false" fork="true">
+            <classpath>
+                <pathelement path="${build.dir}"/>
+                <pathelement path="${test.build.dir}"/>
+                <fileset dir="${lib.dir}" includes="**/*.jar"/>
+            </classpath>
+            <formatter type="xml"/>
+            <batchtest todir="${report.dir}">
+                <fileset dir="${src.test}" includes="**/*Test.java"/>
+            </batchtest>
+        </junit>
     </target>
 
-    <!-- Воспроизведение музыки после сборки -->
-    <target name="music">
-        <exec executable="afplay" failonerror="false">
+    <!-- native2ascii для локалей -->
+    <target name="native2ascii" depends="build">
+        <native2ascii src="${src.resources}" dest="${build.dir}/locales"/>
+    </target>
+
+    <!-- Генерация MD5/SHA-1 и javadoc -->
+    <target name="doc" depends="build">
+        <checksum todir="${doc.dir}" algorithm="MD5,SHA-1">
+            <fileset dir="${build.dir}" includes="**/*.class"/>
+        </checksum>
+        <javadoc destdir="${doc.dir}/apidocs" sourcepath="${src.main}" packagenames="labs.*"/>
+        <jar destfile="${dist.dir}/weblab3-doc-${version}.jar" basedir="${doc.dir}/apidocs"/>
+    </target>
+
+    <!-- Валидация XML -->
+    <target name="xml" depends="init">
+        <xmlvalidate srcdir="${xml.dir}" includes="**/*.xml"/>
+    </target>
+
+    <!-- SCP‑деплой -->
+    <target name="scp" depends="build">
+        <scp file="${dist.dir}/${jar.name}"
+             todir="${scp.user}@${scp.host}:${scp.dest}"
+             trust="true"/>
+    </target>
+
+    <!-- Воспроизведение музыки -->
+    <target name="music" depends="build">
+        <exec executable="afplay" failonerror="true">
             <arg value="${music.file}"/>
         </exec>
     </target>
 
-    <!-- Добавить и закоммитить JUnit-отчеты в git после успешных тестов -->
-    <target name="report" depends="test">
-        <exec executable="git">
-            <arg value="add"/>
-            <arg value="${report.dir}/*.xml"/>
-        </exec>
-        <exec executable="git">
-            <arg value="commit"/>
-            <arg value="-m"/>
-            <arg value="${git.commit.msg}"/>
-        </exec>
-        <exec executable="git" failonerror="false">
-            <arg value="push"/>
-        </exec>
-        <echo message="JUnit reports added and committed to git."/>
+    <!-- История сборки из SVN -->
+    <target name="history">
+        <scriptdef name="doHistory" language="groovy"><![CDATA[
+            def first = project.getProperty("svn.first.rev").toInteger()
+            def rev = "HEAD"
+            while (true) {
+                try {
+                    project.executeTarget("build")
+                    break
+                } catch (e) {
+                    if (rev.isInteger() && rev.toInteger() <= first) {
+                        project.log("Достигнута первая ревизия, выходим.", project.MSG_WARN)
+                        break
+                    }
+                    rev = (rev=="HEAD" ? first.toString() : (rev.toInteger()-1).toString())
+                    project.log("Пытаем сборку ревизии ${rev}", project.MSG_INFO)
+                    "svn update -r ${rev}".execute().waitFor()
+                }
+            }
+        ]]></scriptdef>
+        <doHistory/>
     </target>
-    
+
+    <!-- Добавление и коммит JUnit‑отчётов -->
+    <target name="report" depends="test">
+        <exec executable="git"><arg value="add"/><arg value="${report.dir}/*.xml"/></exec>
+        <exec executable="git"><arg value="commit"/><arg value="-m"/><arg value="${git.commit.msg}"/></exec>
+    </target>
+
+    <!-- Сборка трёх предыдущих Git‑ревизий и упаковка в zip -->
+    <target name="team">
+        <scriptdef name="doTeam" language="groovy"><![CDATA[
+            def revs = "git rev-list --max-count=3 HEAD".execute().text.readLines()
+            def jars = []
+            revs.each { r ->
+                "git checkout ${r}".execute().waitFor()
+                project.executeTarget("build")
+                jars << new File(project.getProperty("dist.dir"), project.getProperty("jar.name"))
+            }
+            "git checkout HEAD".execute().waitFor()
+            def zip = new java.util.zip.ZipOutputStream(new FileOutputStream(project.getProperty("dist.dir") + "/weblab3-team.zip"))
+            jars.each { f ->
+                zip.putNextEntry(new java.util.zip.ZipEntry(f.name))
+                zip.write(f.bytes)
+                zip.closeEntry()
+            }
+            zip.close()
+        ]]></scriptdef>
+        <doTeam/>
+    </target>
+
+    <!-- Запуск в альтернативных окружениях -->
+    <target name="env" depends="build">
+        <scriptdef name="doEnv" language="groovy"><![CDATA[
+            def versions = project.getProperty("env.java.versions").split(",")
+            versions.each { v ->
+                project.log("Запуск с Java ${v}", project.MSG_INFO)
+                project.exec {
+                    executable "${System.getenv('JAVA_HOME')}/bin/java"
+                    arg value: "-version:${v.trim()}"
+                    arg line: project.getProperty("env.jvm.args")
+                    arg value: "-jar"
+                    arg value: project.getProperty("dist.dir") + "/" + project.getProperty("jar.name")
+                }
+            }
+        ]]></scriptdef>
+        <doEnv/>
+    </target>
+
+    <!-- Авто‑коммит при изменении указанных классов -->
+    <target name="diff">
+        <exec executable="git" outputproperty="git.changes"><arg value="diff"/><arg value="--name-only"/></exec>
+        <condition property="do.commit">
+            <matches string="${git.changes}" regexp="${diff.classes}"/>
+        </condition>
+        <antcall target="git-commit"/>
+    </target>
+    <target name="git-commit" if="do.commit">
+        <exec executable="git"><arg value="add"/><arg value="."/></exec>
+        <exec executable="git"><arg value="commit"/><arg value="-m"/><arg value="Auto commit of changed classes"/></exec>
+    </target>
+
+    <!-- Альтернативная сборка с заменой токенов -->
+    <target name="alt" depends="build">
+        <replace file="${src.main}" tokenfile="${replace.tokens}"/>
+        <antcall target="build"/>
+    </target>
 </project>
